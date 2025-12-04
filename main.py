@@ -108,11 +108,21 @@ def preprocess_data(
             logger.info(f"Encoded {len(artifacts['target_encoder'].classes_)} target classes")
         else:
             # Handle unknown target categories during inference
-            known_classes = set(artifacts["target_encoder"].classes_)
+            encoder = artifacts["target_encoder"]
+            known_classes = set(encoder.classes_)
             unknown_mask = ~y.isin(known_classes)
             if unknown_mask.any():
-                logger.warning(f"Found {unknown_mask.sum()} samples with unknown target categories")
-            y = pd.Series(artifacts["target_encoder"].transform(y), index=y.index)
+                logger.warning(
+                    f"Found {unknown_mask.sum()} samples with unknown target categories, "
+                    "mapping to -1"
+                )
+                # Create mapping dict and handle unknowns
+                class_to_idx = {c: i for i, c in enumerate(encoder.classes_)}
+                y = pd.Series(
+                    [class_to_idx.get(val, -1) for val in y], index=y.index
+                )
+            else:
+                y = pd.Series(encoder.transform(y), index=y.index)
 
     # Handle categorical features
     categorical_cols = X.select_dtypes(include=["object"]).columns
@@ -121,19 +131,22 @@ def preprocess_data(
             artifacts["feature_encoders"][col] = LabelEncoder()
             X[col] = artifacts["feature_encoders"][col].fit_transform(X[col].astype(str))
         else:
-            # Handle unknown categories during inference by mapping to -1
+            # Handle unknown categories during inference using vectorized mapping
             encoder = artifacts["feature_encoders"][col]
-            known_classes = set(encoder.classes_)
             col_values = X[col].astype(str)
-            unknown_mask = ~col_values.isin(known_classes)
-            if unknown_mask.any():
+
+            # Create mapping dict for efficient lookup
+            class_to_idx = {c: i for i, c in enumerate(encoder.classes_)}
+
+            # Vectorized mapping with -1 for unknown categories
+            X[col] = col_values.map(class_to_idx).fillna(-1).astype(int)
+
+            # Log warning if unknowns were found
+            unknown_count = (X[col] == -1).sum()
+            if unknown_count > 0:
                 logger.warning(
-                    f"Found {unknown_mask.sum()} unknown categories in column '{col}'"
+                    f"Found {unknown_count} unknown categories in column '{col}'"
                 )
-            # Map unknown categories to -1, known to encoded value
-            X[col] = col_values.apply(
-                lambda x: encoder.transform([x])[0] if x in known_classes else -1
-            )
 
     # Scale numerical features
     if fit:
