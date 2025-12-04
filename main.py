@@ -60,17 +60,26 @@ def load_data(filepath: str) -> pd.DataFrame:
 
 
 def preprocess_data(
-    df: pd.DataFrame, target_column: str = "label"
-) -> tuple[pd.DataFrame, pd.Series]:
+    df: pd.DataFrame,
+    target_column: str = "label",
+    target_encoder: LabelEncoder | None = None,
+    feature_encoders: dict[str, LabelEncoder] | None = None,
+    scaler: StandardScaler | None = None,
+    fit: bool = True,
+) -> tuple[pd.DataFrame, pd.Series, dict]:
     """
-    Preprocess the data for training.
+    Preprocess the data for training or inference.
 
     Args:
         df: Raw DataFrame containing network intrusion data.
         target_column: Name of the column containing the target labels.
+        target_encoder: Pre-fitted LabelEncoder for target (for inference).
+        feature_encoders: Pre-fitted encoders for categorical features (for inference).
+        scaler: Pre-fitted StandardScaler (for inference).
+        fit: If True, fit new encoders/scaler; if False, use provided ones.
 
     Returns:
-        Tuple of (features DataFrame, target Series).
+        Tuple of (features DataFrame, target Series, preprocessing artifacts dict).
 
     Raises:
         ValueError: If target column is not found in DataFrame.
@@ -80,28 +89,44 @@ def preprocess_data(
     if target_column not in df.columns:
         raise ValueError(f"Target column '{target_column}' not found in DataFrame")
 
+    # Initialize preprocessing artifacts
+    artifacts = {
+        "target_encoder": target_encoder,
+        "feature_encoders": feature_encoders if feature_encoders else {},
+        "scaler": scaler,
+    }
+
     # Separate features and target
     X = df.drop(columns=[target_column])
     y = df[target_column]
 
     # Encode categorical target if needed
     if y.dtype == "object":
-        le = LabelEncoder()
-        y = pd.Series(le.fit_transform(y), index=y.index)
-        logger.info(f"Encoded {len(le.classes_)} target classes")
+        if fit:
+            artifacts["target_encoder"] = LabelEncoder()
+            y = pd.Series(artifacts["target_encoder"].fit_transform(y), index=y.index)
+            logger.info(f"Encoded {len(artifacts['target_encoder'].classes_)} target classes")
+        else:
+            y = pd.Series(artifacts["target_encoder"].transform(y), index=y.index)
 
     # Handle categorical features
     categorical_cols = X.select_dtypes(include=["object"]).columns
     for col in categorical_cols:
-        le = LabelEncoder()
-        X[col] = le.fit_transform(X[col].astype(str))
+        if fit:
+            artifacts["feature_encoders"][col] = LabelEncoder()
+            X[col] = artifacts["feature_encoders"][col].fit_transform(X[col].astype(str))
+        else:
+            X[col] = artifacts["feature_encoders"][col].transform(X[col].astype(str))
 
     # Scale numerical features
-    scaler = StandardScaler()
-    X = pd.DataFrame(scaler.fit_transform(X), columns=X.columns, index=X.index)
+    if fit:
+        artifacts["scaler"] = StandardScaler()
+        X = pd.DataFrame(artifacts["scaler"].fit_transform(X), columns=X.columns, index=X.index)
+    else:
+        X = pd.DataFrame(artifacts["scaler"].transform(X), columns=X.columns, index=X.index)
 
     logger.info(f"Preprocessed {len(X)} samples with {len(X.columns)} features")
-    return X, y
+    return X, y, artifacts
 
 
 def handle_imbalance(
@@ -215,15 +240,15 @@ def main(data_path: str = "data/raw/network_data.csv") -> dict:
         data_path: Path to the network intrusion data file.
 
     Returns:
-        Dictionary containing evaluation metrics.
+        Dictionary containing evaluation metrics and preprocessing artifacts.
     """
     logger.info("Starting Network Intrusion Detection pipeline")
 
     # Load data
     df = load_data(data_path)
 
-    # Preprocess data
-    X, y = preprocess_data(df)
+    # Preprocess data (fit=True to train encoders and scaler)
+    X, y, artifacts = preprocess_data(df, fit=True)
 
     # Split data
     X_train, X_test, y_train, y_test = train_test_split(
@@ -240,8 +265,15 @@ def main(data_path: str = "data/raw/network_data.csv") -> dict:
     # Evaluate model
     metrics = evaluate_model(model, X_test, y_test)
 
+    # Store model and artifacts for future inference
+    result = {
+        "metrics": metrics,
+        "model": model,
+        "artifacts": artifacts,
+    }
+
     logger.info("Pipeline completed successfully")
-    return metrics
+    return result
 
 
 if __name__ == "__main__":
