@@ -5,7 +5,7 @@ This module provides functionality for loading network intrusion data,
 training a Random Forest classifier, and calculating Precision/Recall
 metrics to handle unbalanced classes.
 """
-
+import joblib
 import logging
 import os
 from pathlib import Path
@@ -164,18 +164,31 @@ def handle_imbalance(
 ) -> tuple[pd.DataFrame, pd.Series]:
     """
     Handle class imbalance using SMOTE oversampling.
-
+    Adjusts k_neighbors dynamically for rare classes.
     Args:
         X: Feature DataFrame.
         y: Target Series.
-
     Returns:
         Tuple of (resampled features, resampled targets).
     """
     logger.info("Handling class imbalance with SMOTE")
-    logger.info(f"Original class distribution: {dict(y.value_counts())}")
+    class_counts = y.value_counts()
+    logger.info(f"Original class distribution: {dict(class_counts)}")
 
-    smote = SMOTE(random_state=42)
+    # Find the smallest class size to set k_neighbors safely
+    min_class_size = class_counts.min()
+
+    # SMOTE default is k=5. We need at least k+1 samples in the class.
+    # Logic: If smallest class has 2 samples, k can be max 1.
+    k_neighbors = min(5, min_class_size - 1)
+    
+    # Safety net: k must be at least 1
+    if k_neighbors < 1:
+        k_neighbors = 1
+        
+    logger.info(f"Adjusting SMOTE k_neighbors to {k_neighbors} due to rare classes")
+
+    smote = SMOTE(random_state=42, k_neighbors=k_neighbors)
     X_resampled, y_resampled = smote.fit_resample(X, y)
 
     X_resampled = pd.DataFrame(X_resampled, columns=X.columns)
@@ -265,10 +278,8 @@ def evaluate_model(
 def main(data_path: str = "data/raw/network_data.csv") -> dict:
     """
     Main function to run the network intrusion detection pipeline.
-
     Args:
         data_path: Path to the network intrusion data file.
-
     Returns:
         Dictionary containing evaluation metrics and preprocessing artifacts.
     """
@@ -280,7 +291,23 @@ def main(data_path: str = "data/raw/network_data.csv") -> dict:
     # Preprocess data (fit=True to train encoders and scaler)
     X, y, artifacts = preprocess_data(df, fit=True)
 
+    # --- FIX START: Remove classes with fewer than 2 instances ---
+    class_counts = y.value_counts()
+    valid_classes = class_counts[class_counts >= 2].index
+    
+    # Check if we have rare classes to drop
+    if len(valid_classes) < len(class_counts):
+        diff = len(class_counts) - len(valid_classes)
+        logger.warning(f"Dropping {diff} rare classes with only 1 sample to allow stratified split.")
+        
+        # Filter mask
+        mask = y.isin(valid_classes)
+        X = X[mask]
+        y = y[mask]
+    # --- FIX END ---
+
     # Split data
+    # Now this won't crash because all classes have at least 2 samples
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
@@ -296,15 +323,29 @@ def main(data_path: str = "data/raw/network_data.csv") -> dict:
     metrics = evaluate_model(model, X_test, y_test)
 
     # Store model and artifacts for future inference
+# Store model and artifacts for future inference
     result = {
         "metrics": metrics,
         "model": model,
         "artifacts": artifacts,
     }
 
+    # --- NEW: Save the model to disk ---
+    models_dir = Path("models")
+    models_dir.mkdir(exist_ok=True)
+    
+    model_path = models_dir / "nids_model.pkl"
+    artifacts_path = models_dir / "preprocessing_artifacts.pkl"
+    
+    joblib.dump(model, model_path)
+    joblib.dump(artifacts, artifacts_path)
+    
+    logger.info(f"Model saved to {model_path}")
+    logger.info(f"Artifacts saved to {artifacts_path}")
+    # -----------------------------------
+
     logger.info("Pipeline completed successfully")
     return result
-
 
 if __name__ == "__main__":
     import sys
