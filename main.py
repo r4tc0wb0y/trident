@@ -16,6 +16,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, precision_score, recall_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.linear_model import LogisticRegression
 
 # Configure logging
 LOG_DIR = Path("logs")
@@ -229,6 +230,36 @@ def train_random_forest(
     logger.info("Random Forest training completed")
     return model
 
+def train_logistic_regression(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    max_iter: int = 1000,
+    random_state: int = 42,
+) -> LogisticRegression:
+    """
+    Train a Logistic Regression classifier.
+    Args:
+        X_train: Training features.
+        y_train: Training targets.
+        max_iter: Maximum number of iterations for convergence.
+        random_state: Random seed.
+    Returns:
+        Trained LogisticRegression model.
+    """
+    logger.info(f"Training Logistic Regression (max_iter={max_iter})")
+
+    # Logistic Regression is sensitive to scale, but we already scaled in preprocess_data!
+    model = LogisticRegression(
+        max_iter=max_iter,
+        random_state=random_state,
+        n_jobs=-1,
+        class_weight="balanced", # Critical for our imbalance
+        solver='lbfgs' # Standard solver
+    )
+    model.fit(X_train, y_train)
+
+    logger.info("Logistic Regression training completed")
+    return model
 
 def evaluate_model(
     model: RandomForestClassifier, X_test: pd.DataFrame, y_test: pd.Series
