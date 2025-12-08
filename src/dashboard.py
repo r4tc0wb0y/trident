@@ -19,15 +19,17 @@ st.set_page_config(
 # ----------------------------------------------------------------------
 # 2. Import preprocessing function from main.py
 # ----------------------------------------------------------------------
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(CURRENT_DIR)
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))   # .../trident/src
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)                # .../trident
+sys.path.append(PROJECT_ROOT)
 
 try:
     from main import preprocess_data
-except ImportError:
+except ImportError as e:
     st.error(
         "Could not import 'preprocess_data' from 'main.py'. "
-        "Make sure 'main.py' exists in the 'src' folder and defines this function."
+        "Make sure 'main.py' is in the project root and defines this function.\n"
+        f"Details: {e}"
     )
     st.stop()
 
