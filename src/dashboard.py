@@ -1,5 +1,3 @@
-# src/dashboard.py
-
 import os
 import sys
 import joblib
@@ -12,24 +10,22 @@ import streamlit as st
 # ----------------------------------------------------------------------
 st.set_page_config(
     page_title="Trident NIDS",
-    page_icon="",
+    page_icon=None,
     layout="wide"
 )
 
 # ----------------------------------------------------------------------
 # 2. Import preprocessing function from main.py
 # ----------------------------------------------------------------------
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))   # .../trident/src
-PROJECT_ROOT = os.path.dirname(CURRENT_DIR)                # .../trident
-sys.path.append(PROJECT_ROOT)
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(CURRENT_DIR)
 
 try:
     from main import preprocess_data
-except ImportError as e:
+except ImportError:
     st.error(
         "Could not import 'preprocess_data' from 'main.py'. "
-        "Make sure 'main.py' is in the project root and defines this function.\n"
-        f"Details: {e}"
+        "Make sure 'main.py' exists in the 'src' folder."
     )
     st.stop()
 
@@ -40,7 +36,6 @@ except ImportError as e:
 def load_assets():
     """
     Load the trained Random Forest model and preprocessing artifacts.
-    Cached so it is only loaded once per session.
     """
     model_path = os.path.join(CURRENT_DIR, "..", "models", "best_model_rf.pkl")
     artifacts_path = os.path.join(CURRENT_DIR, "..", "models", "preprocessing_artifacts.pkl")
@@ -58,12 +53,12 @@ def load_assets():
         artifacts = joblib.load(artifacts_path)
         return model, artifacts
     except Exception as e:
-        st.error(f"Error loading model or artifacts: {e}")
+        st.error(f"Error loading assets: {e}")
         return None, None
 
 
 model, artifacts = load_assets()
-if model is None or artifacts is None:
+if model is None:
     st.stop()
 
 # ----------------------------------------------------------------------
@@ -74,61 +69,29 @@ st.markdown("---")
 
 col_left, col_right = st.columns([1, 2])
 
-# ----------------------------------------------------------------------
-# 4.1 Left column – packet / flow configuration
-# ----------------------------------------------------------------------
+# 4.1 Left column – Configuration
 with col_left:
     st.subheader("Traffic Configuration")
     st.info("Simulate a network connection by adjusting key parameters.")
 
-    # Example values are roughly based on normal NSL-KDD traffic
-    duration = st.number_input(
-        "Duration (seconds)", min_value=0.0, value=0.0, step=0.1
-    )
-
+    duration = st.number_input("Duration (seconds)", min_value=0.0, value=0.0, step=0.1)
     protocol_type = st.selectbox("Protocol", ["tcp", "udp", "icmp"])
-    service = st.selectbox(
-        "Service",
-        ["http", "private", "ecr_i", "smtp", "ftp_data", "other"]
-    )
+    service = st.selectbox("Service", ["http", "private", "ecr_i", "smtp", "ftp_data", "other"])
     flag = st.selectbox("TCP Flag", ["SF", "S0", "REJ", "RSTR", "SH"])
+    src_bytes = st.number_input("Source bytes", min_value=0, value=200, step=50)
+    dst_bytes = st.number_input("Destination bytes", min_value=0, value=4000, step=100)
+    count = st.slider("Connections to same host (count)", 0, 511, 2)
+    srv_count = st.slider("Connections to same service (srv_count)", 0, 511, 2)
+    serror_rate = st.slider("SYN error rate", 0.0, 1.0, 0.0)
+    dst_host_srv_count = st.slider("Destination host service count", 0, 255, 100)
 
-    src_bytes = st.number_input(
-        "Source bytes (src_bytes)", min_value=0, value=200, step=50
-    )
-    dst_bytes = st.number_input(
-        "Destination bytes (dst_bytes)", min_value=0, value=4000, step=100
-    )
-
-    count = st.slider(
-        "Connections to same host (count)", min_value=0, max_value=511, value=2
-    )
-    srv_count = st.slider(
-        "Connections to same service (srv_count)", min_value=0, max_value=511, value=2
-    )
-
-    serror_rate = st.slider(
-        "SYN error rate (serror_rate)", min_value=0.0, max_value=1.0, value=0.0
-    )
-    dst_host_srv_count = st.slider(
-        "Destination host service count (dst_host_srv_count)",
-        min_value=0,
-        max_value=255,
-        value=100
-    )
-
-# ----------------------------------------------------------------------
-# 4.2 Right column – analysis and output
-# ----------------------------------------------------------------------
+# 4.2 Right column – Analysis
 with col_right:
     st.subheader("Real-Time Analysis")
 
     if st.button("Analyze Connection", type="primary"):
         try:
-            # ------------------------------------------------------------------
-            # 5. Build a full feature dictionary (41 NSL-KDD features)
-            #    Non-controlled features are filled with default values.
-            # ------------------------------------------------------------------
+            # 5. Build feature dictionary (dummy label included)
             input_dict = {
                 "duration": duration,
                 "protocol_type": protocol_type,
@@ -171,60 +134,74 @@ with col_right:
                 "dst_host_srv_serror_rate": 0.0,
                 "dst_host_rerror_rate": 0.0,
                 "dst_host_srv_rerror_rate": 0.0,
-                # Dummy label so preprocess_data does not raise an error
-                "label": "unknown"
+                # dummy target; required by preprocess_data but not used for prediction
+                "label": "normal"
             }
 
             raw_df = pd.DataFrame([input_dict])
 
-            # ------------------------------------------------------------------
-            # 6. Preprocess using the training artifacts
-            #    We pass the dummy target column and use fit=False so that
-            #    encoders and scaler are not refit.
-            # ------------------------------------------------------------------
+            # 6. Preprocess using the same artifacts as training
             X_processed, _, _ = preprocess_data(
                 raw_df,
                 target_column="label",
                 fit=False,
-                target_encoder=None,
+                target_encoder=artifacts["target_encoder"],
                 feature_encoders=artifacts["feature_encoders"],
                 scaler=artifacts["scaler"],
             )
 
-            # ------------------------------------------------------------------
             # 7. Prediction
-            # ------------------------------------------------------------------
             prediction = model.predict(X_processed)[0]
             prob_vector = model.predict_proba(X_processed)[0]
             confidence = float(np.max(prob_vector))
 
-            # Decode predicted label
+            # Decode label
             pred_label = artifacts["target_encoder"].inverse_transform([prediction])[0]
-            is_normal = pred_label.lower() in {"normal", "benign"}
+            is_normal = pred_label.lower() in ["normal", "benign", "benign."]
 
-            # ------------------------------------------------------------------
-            # 8. Display result
-            # ------------------------------------------------------------------
-            if is_normal:
-                st.success("Normal traffic detected.")
+            # 8. Display result with confidence threshold
+            threshold = 0.70
+
+            if is_normal and confidence >= threshold:
+                st.success("Traffic classified as NORMAL (no intrusion detected).")
                 st.metric("Model confidence", f"{confidence:.2%}")
+                st.info("No immediate action required. Monitoring continues.")
+            elif is_normal and confidence < threshold:
+                st.warning("Traffic classified as NORMAL, but with LOW confidence.")
+                st.metric("Model confidence", f"{confidence:.2%}")
+                st.info(
+                    "Suggested action: keep monitoring this source. "
+                    "Consider deeper inspection if unusual patterns persist."
+                )
             else:
-                st.error(f"Intrusion detected: {pred_label.upper()}")
+                st.error(f"INTRUSION DETECTED: {pred_label.upper()}")
                 st.metric("Model confidence", f"{confidence:.2%}")
                 st.progress(confidence)
-                st.warning("Suggested action: investigate and block the source if confirmed malicious.")
+                st.warning("Suggested action: isolate source IP and investigate logs.")
 
-            # Optional: show processed feature vector for debugging
-            with st.expander("Show processed feature vector (debug)"):
-                # X_processed is already a DataFrame with its own columns
+            # Debug: processed feature vector
+            with st.expander("View processed feature vector (debug)"):
                 st.write(X_processed)
 
-        except Exception as e:
-            st.error(f"An error occurred during processing: {e}")
-            st.info("Tip: verify that 'main.py' is in the 'src' folder and matches the training pipeline.")
+            # Debug: class probabilities
+            with st.expander("View class probabilities (debug)"):
+                # Classes that the model actually outputs probabilities for
+                model_class_indices = model.classes_  # integer labels used by the model
+                class_labels = artifacts["target_encoder"].inverse_transform(model_class_indices)
+            
+                probs_df = pd.DataFrame(
+                    {
+                        "Class": class_labels,
+                        "Probability": prob_vector
+                    }
+                ).sort_values("Probability", ascending=False)
+            
+                st.write(probs_df.reset_index(drop=True))
 
-# ----------------------------------------------------------------------
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
+            st.write("Check your model, artifacts and main.py consistency.")
+
 # Footer
-# ----------------------------------------------------------------------
 st.markdown("---")
 st.caption("Trident Project – CS3315 – Francisco Maldonado")
