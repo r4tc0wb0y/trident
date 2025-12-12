@@ -15,17 +15,21 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------------------------
-# 2. Import preprocessing function from main.py
+# 2. Import preprocessing function from main.py (project root)
 # ----------------------------------------------------------------------
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(CURRENT_DIR)
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, os.pardir))
+
+# Ensure the project root (where main.py lives) is on sys.path
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 try:
     from main import preprocess_data
-except ImportError:
+except Exception as e:
     st.error(
-        "Could not import 'preprocess_data' from 'main.py'. "
-        "Make sure 'main.py' exists in the 'src' folder."
+        "Could not import 'preprocess_data' from 'main.py' located in the project "
+        f"root directory. Underlying error: {e}"
     )
     st.stop()
 
@@ -155,9 +159,12 @@ with col_right:
             prob_vector = model.predict_proba(X_processed)[0]
             confidence = float(np.max(prob_vector))
 
-            # Decode label
+            # Decode label and normalize it (remove trailing dot, lowercase)
             pred_label = artifacts["target_encoder"].inverse_transform([prediction])[0]
-            is_normal = pred_label.lower() in ["normal", "benign", "benign."]
+            pred_label_clean = pred_label.rstrip(".").lower()
+
+            # Treat both "normal" and "benign" (with/without dot) as non-intrusions
+            is_normal = pred_label_clean in ["normal", "benign"]
 
             # 8. Display result with confidence threshold
             threshold = 0.70
@@ -174,7 +181,7 @@ with col_right:
                     "Consider deeper inspection if unusual patterns persist."
                 )
             else:
-                st.error(f"INTRUSION DETECTED: {pred_label.upper()}")
+                st.error(f"INTRUSION DETECTED: {pred_label_clean.upper()}")
                 st.metric("Model confidence", f"{confidence:.2%}")
                 st.progress(confidence)
                 st.warning("Suggested action: isolate source IP and investigate logs.")
@@ -185,22 +192,21 @@ with col_right:
 
             # Debug: class probabilities
             with st.expander("View class probabilities (debug)"):
-                # Classes that the model actually outputs probabilities for
                 model_class_indices = model.classes_  # integer labels used by the model
                 class_labels = artifacts["target_encoder"].inverse_transform(model_class_indices)
-            
+
                 probs_df = pd.DataFrame(
                     {
                         "Class": class_labels,
                         "Probability": prob_vector
                     }
                 ).sort_values("Probability", ascending=False)
-            
+
                 st.write(probs_df.reset_index(drop=True))
 
         except Exception as e:
             st.error(f"An error occurred: {e}")
-            st.write("Check your model, artifacts and main.py consistency.")
+            st.write("Check model, preprocessing artifacts, and 'main.py' consistency.")
 
 # Footer
 st.markdown("---")
